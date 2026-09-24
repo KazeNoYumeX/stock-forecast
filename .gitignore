@@ -130,3 +130,7 @@ dmypy.json
 
 # JetBrains
 .idea/
+
+# 本系統資料（DB、每日訊號）不進版控，watchlist 例外
+data/*
+!data/watchlist.txt
