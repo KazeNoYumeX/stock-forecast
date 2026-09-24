@@ -1,0 +1,9 @@
+services:
+  forecast:
+    build: .
+    image: stock-forecast
+    volumes:
+      - ./data:/app/data
+    environment:
+      TZ: Asia/Taipei
+      # BROKER_DISCOUNT: "0.6"   # 券商手續費折扣，例如 6 折
