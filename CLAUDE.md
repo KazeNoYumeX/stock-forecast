@@ -133,7 +133,9 @@
    與價量正交。是唯一投入產出比合理的新資訊源。
    **不要加 EPS**：季頻，對 7~30 天持有期等同常數。
 3. **往前走的真實訊號** —— 唯一沒被參數掃描污染的資料。
-   `C.PROFILES` 的兩個版本每天發訊號、`verify` 結算，累積約 1,200 筆後才有統計意義。
+   `C.PROFILES` 的三個版本（停利 5%／15%／20%，其餘完全相同）每天發訊號、
+   `verify` 分別結算。三個點放在同一條曲線上，讓市場回答「停利該訂多高」。
+   累積約 1,200 筆後才有統計意義。
    **在那之前不要根據線上結果調參數**（單日 20 檔等於零資訊）。
 
 ---
@@ -143,7 +145,7 @@
 ```bash
 docker compose run --rm forecast fetch      # 股價
 docker compose run --rm forecast chips      # 籌碼（FinMind 回補／官方增量）
-docker compose run --rm forecast daily      # 兩個版本的候選清單
+docker compose run --rm forecast daily      # 三個版本的候選清單（5%/15%/20%）
 docker compose run --rm forecast verify     # 用真實價格結算過去訊號
 docker compose run --rm forecast price 2330 1000   # 依成交價換算停利停損
 docker compose run --rm forecast backtest --horizon 7
