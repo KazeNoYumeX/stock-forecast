@@ -107,7 +107,9 @@ def _one_profile(con, feat, h, name, net, stop, top_n, nm):
         "開盤預估低": (top.close * (1 + top.gap_lo)).round(2),
         "開盤預估高": (top.close * (1 + top.gap_hi)).round(2),
         "停利%": ((top.tp_mult - 1) * 100).map("{:+.2f}".format),
-        "停損%": ((top.sl_mult - 1) * 100).map("{:.2f}".format),
+        "停損%": (["不停損"] * len(top) if stop >= 0.9
+                 else ((top.sl_mult - 1) * 100).map("{:.2f}".format)),
+        "一張成本(萬)": (top.close * 1000 / 1e4).round(1),
         "最長持有": f"{h}d",
     }).reset_index(drop=True)
     out.index += 1
@@ -128,12 +130,15 @@ def cmd_daily(args):
         sys.exit(f"沒有符合的版本，可用：{[p[0] for p in C.PROFILES]}")
 
     os.makedirs(f"{C.DATA_DIR}/signals", exist_ok=True)
-    for name, ph, net, stop, top_n in profiles:
+    for name, ph, net, stop, top_n, note in profiles:
         h = args.horizon or ph
         out, rows, calib, ts, top = _one_profile(con, feat, h, name, net, stop, top_n, nm)
         print(f"\n{'=' * 70}")
-        print(f"[{name}]  {ts}  H={h}d　停利 淨{net*100:.0f}%（毛 {C.raw_target(net)*100:.2f}%）"
-              f"　停損 {stop*100:.0f}%　取前 {top_n} 檔")
+        print(f"[{name}]  {ts}  H={h}d　停利 淨{net*100:.0f}%"
+              f"（毛 {C.raw_target(net)*100:.2f}%）　"
+              + ("不停損" if stop >= 0.9 else f"停損 {stop*100:.0f}%")
+              + f"　取前 {top_n} 檔")
+        print(f"  回測狀態：{note}")
         print('=' * 70)
         print(out.to_string())
         if calib:
@@ -216,7 +221,7 @@ def cmd_price(args):
     prof = {p[0]: p for p in C.PROFILES}.get(args.profile or C.PROFILES[0][0])
     if prof is None:
         sys.exit(f"未知版本，可用：{[p[0] for p in C.PROFILES]}")
-    _, ph, net, stop, _ = prof
+    _, ph, net, stop, _, _ = prof
     tp, sl = 1 + C.raw_target(net, etf=C.is_etf(sym)), 1 - stop
     h = args.horizon or ph
     print(f"\n[{prof[0]}] 停利 淨{net*100:.0f}% / 停損 {stop*100:.0f}%")
