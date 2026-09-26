@@ -77,7 +77,7 @@ def cmd_daily(args):
 
     # 用最後一折做校準，讓報表能誠實說出「這份清單歷史命中率是多少」
     calib = ""
-    report, _ = B.run(df, h)
+    report, _ = B.run(df, h, last_only=True)
     if not report.empty:
         last = report.iloc[-1]
         calib = (f"校準（最近一折 {last.test_start}~{last.test_end}）："

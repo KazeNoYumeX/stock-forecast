@@ -25,7 +25,7 @@ ENGINES = [("rule", "規則排序"), ("ml", "ML 純價量"),
            ("ml_chip", "ML 價量+籌碼"), ("ml_neut", "ML 波動率中性化")]
 
 
-def run(df, horizon, top_n=None):
+def run(df, horizon, top_n=None, last_only=False):
     """df 需含特徵 + y + net_ret。回傳 (每折摘要, 逐筆選股)。
 
     籌碼欄位刻意不 dropna：HistGradientBoosting 原生吃 NaN，丟掉反而會讓
@@ -36,7 +36,8 @@ def run(df, horizon, top_n=None):
     dates = np.sort(d.date.unique())
     rows, picks = [], []
 
-    for tr_d, te_d in folds(dates, horizon):
+    fs = list(folds(dates, horizon))
+    for tr_d, te_d in (fs[-1:] if last_only else fs):      # daily 只需要最後一折做校準
         train = d[d.date.isin(tr_d)]
         test = d[d.date.isin(te_d)].copy()
         if test.empty:
