@@ -27,11 +27,6 @@ def _features(con):
                        CH.load(con)), bench
 
 
-def _panel(con, horizon):
-    feat, _ = _features(con)
-    return M.label(feat, horizon)
-
-
 def cmd_fetch(args):
     con = D.db()
     uni = D.select_universe(con)
@@ -65,7 +60,7 @@ def cmd_chips(args):
 def cmd_backtest(args):
     con = D.db()
     for h in ([args.horizon] if args.horizon else C.HORIZONS):
-        df = _panel(con, h)
+        df = M.label(_features(con)[0], h)
         report, picks = B.run(df, h)
         if report.empty:
             sys.exit(f"資料不足以切出任何一折（需要 > {C.TRAIN_DAYS + C.TEST_DAYS + h} 個交易日）")

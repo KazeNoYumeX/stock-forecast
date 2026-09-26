@@ -185,6 +185,11 @@ def _folds_of(feat, horizon, top_ns, net=None, entry="open", cap=None, stop=None
               exit="barrier", trail=None, seed=0):
     """標籤一次、每折訓練一次，然後一次評估所有 top_n。
 
+    ponytail: 與 run() 的迴圈重疊約 25 行（tradable->dropna->folds->fit->neutralize
+    ->vol_matched->pick->metrics）。沒合併是因為兩者都沒有直接的測試覆蓋，
+    合併的風險大於省下的行數。要動之前先補一個端到端的回測數值比對測試。
+
+
     top_n 只影響「取前幾名」，不影響標籤與訓練 —— 每個 top_n 重跑整個回測是浪費。
     回傳 (逐折逐 top_n 的長表, 選股明細)。
     """
