@@ -264,7 +264,8 @@ def test_grid_selection_rejects_one_sided():
     """錄取條件必須拒絕「靠單邊撐起來」的格子 ——
     集中度 TOP_N=1 與跳空過濾 4% 都是這樣騙過我的。"""
     base = {"vlift": 1.3, "vlift_sd": 0.15, "prec": 0.3, "ret": 0.002,
-            "rnd_cagr": -0.14, "h": 7, "t": 0.12, "s": 0.05, "folds": 13}
+            "rnd_cagr": -0.14, "h": 7, "t": 0.12, "s": 0.05, "folds": 13,
+            "first_fold": "2022-01-12"}
     cells = pd.DataFrame([
         {**base, "cagr": 0.80, "h1": -0.05, "h2": 1.70},   # 年化最高，但前半是負的
         {**base, "cagr": 0.60, "h1": 0.05, "h2": 1.20},    # 兩半都正但差 24 倍
@@ -276,16 +277,27 @@ def test_grid_selection_rejects_one_sided():
     assert w is not None and abs(w["cagr"] - 0.25) < 1e-9, w["cagr"]
 
     # 每一條規則都要真的會擋
-    for i, expect in enumerate(["兩半年化都為正", "兩半差距 < 2x", None,
-                                "贏隨機 > 10pp", "逐折 std < 0.30"]):
+    for i, expect in enumerate(["兩半年化都為正", "兩半差距", None,
+                                "贏隨機", "逐折 std"]):
         bad = B._judge(cells.iloc[i])
         if expect is None:
             assert not bad, bad
         else:
-            assert expect in bad, (i, bad)
+            assert any(expect in x for x in bad), (i, expect, bad)
 
     # 全部落選時要回 None，不能偷偷放寬
     assert B.select(cells[cells.h1 < 0]) is None
+
+    # 只在多頭驗證過的不算驗證過：測試期沒涵蓋 2022 就要擋下來
+    bull_only = {**base, "cagr": 0.30, "h1": 0.28, "h2": 0.32, "first_fold": "2023-02-01"}
+    assert any("2022" in x for x in B._judge(bull_only)), B._judge(bull_only)
+
+    # 比值檢定在接近零時要用絕對容差，否則 +0.4% vs +0.9% 會被當成「差 2.25 倍」誤殺
+    near_zero = {**base, "cagr": 0.007, "h1": 0.004, "h2": 0.009}
+    assert "兩半差距" not in " ".join(B._judge(near_zero)), B._judge(near_zero)
+    # 但絕對差距大的仍要擋住
+    far = {**base, "cagr": 0.50, "h1": 0.10, "h2": 0.90}
+    assert any("兩半差距" in x for x in B._judge(far)), B._judge(far)
 
 
 def test_embargo():

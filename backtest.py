@@ -346,9 +346,18 @@ def audit(feat, horizon, targets, tops, bench=None):
 # 最佳格，樣本放大後全部消失。所以挑的是「兩半都站得住」而不是「年化最高」。
 RULES = [
     ("兩半年化都為正", lambda c: c["h1"] > 0 and c["h2"] > 0),
-    ("兩半差距 < 2x", lambda c: min(abs(c["h1"]), abs(c["h2"])) * 2 >= max(abs(c["h1"]), abs(c["h2"]))),
+    # 比值檢定在數字接近零時沒有意義（+0.4% vs +0.9% 是 2.25 倍，但只差 0.5pp），
+    # 所以補一個絕對容差。這是修正數學缺陷，不是為了讓某一格過關而放寬 ——
+    # 實際套用後只多錄取一格，而那格年化 +0.7%，經濟意義約等於零。
+    ("兩半差距 < 2x 或 5pp 內",
+     lambda c: min(abs(c["h1"]), abs(c["h2"])) * 2 >= max(abs(c["h1"]), abs(c["h2"]))
+     or abs(c["h1"] - c["h2"]) <= 0.05),
     ("贏隨機 > 10pp", lambda c: c["cagr"] - c["rnd_cagr"] > 0.10),
     ("逐折 std < 0.30", lambda c: c["vlift_sd"] < 0.30),
+    # 只在多頭驗證過的策略不算驗證過。2022 年台股 -22.6%，測試期起點必須涵蓋它。
+    # 實例：H=7/停利5%/停損20% 通過上面四條（年化 +0.7%），納入 2022 後變成 -10.3%、
+    # 回撤 -58.0%。預設 TRAIN_DAYS=504 會讓第一折從 2023-02 才開始，要用 252。
+    ("測試期涵蓋 2022 空頭", lambda c: c.get("first_fold", "9999") <= "2022-07-01"),
 ]
 
 
@@ -380,6 +389,7 @@ def grid(feat, horizons, targets, stops, top_n=None, trails=None):
                 half = len(fa) // 2
                 a = _agg(mine)
                 cells.append({"h": h, "t": t, "s": s, "mode": mode, "folds": len(fa),
+                              "first_fold": fa[0],
                               "vlift": a["vlift"], "vlift_sd": a["vlift_sd"],
                               "prec": a["prec"], "ret": a["ret"], "cagr": a["cagr"],
                               "rnd_cagr": _agg(rnd)["cagr"],
