@@ -116,7 +116,8 @@ def test_settle_matches_label():
             continue
         w = d.iloc[i + 1:i + 1 + H]
         out, net, _ = M.settle_one(d.open.iloc[i + 1], w.high.values, w.low.values,
-                                   w.close.values, H)
+                                   w.close.values, H,
+                                   up_r=C.raw_target(), dn_r=C.STOP_LOSS)
         assert (out == "win") == (lab.y.iloc[i] == 1), (i, out, lab.y.iloc[i])
         assert abs(net - lab.net_ret.iloc[i]) < 1e-12, (i, net, lab.net_ret.iloc[i])
         checked += 1
@@ -126,6 +127,136 @@ def test_settle_matches_label():
     flat = np.full(3, 100.0)
     out, net, days = M.settle_one(100.0, flat, flat, flat, H)
     assert (out, days) == ("open", 3) and np.isnan(net), (out, days, net)
+
+    # 門檻必須吃顯式參數而非環境變數：同一段 K 線用不同門檻要給出不同判定。
+    # 並行追蹤多版本時，用 A 版設定結算 B 版訊號會全錯且不會報錯。
+    hi = np.array([100.0, 108.0, 100.0])
+    lo = np.array([100.0, 100.0, 100.0])
+    assert M.settle_one(100.0, hi, lo, hi, H, up_r=0.05, dn_r=0.05)[0] == "win"
+    assert M.settle_one(100.0, hi, lo, hi, H, up_r=0.12, dn_r=0.05)[0] == "open"
+    lo2 = np.array([100.0, 92.0, 100.0])
+    assert M.settle_one(100.0, hi, lo2, hi, H, up_r=0.05, dn_r=0.12)[0] == "win"
+    assert M.settle_one(100.0, hi, lo2, hi, H, up_r=0.20, dn_r=0.05)[0] == "loss"
+
+
+def test_entry_modes():
+    """限價成交邏輯最容易寫錯，三種情形各驗一次。"""
+    # open：無論開在哪都成交
+    assert M.entry_price(110, 105, 100, "open") == 110
+
+    # cap：開盤漲幅超過上限就放棄
+    assert M.entry_price(102, 99, 100, "cap", cap=0.04) == 102
+    assert M.entry_price(106, 99, 100, "cap", cap=0.04) is None
+
+    # limit 掛前收 100：
+    #   開盤已在限價之下 -> 用開盤成交（買得更便宜），不是用限價
+    assert M.entry_price(97, 95, 100, "limit") == 97
+    #   開高但盤中觸及限價 -> 以限價成交
+    assert M.entry_price(103, 99, 100, "limit") == 100
+    #   開高且全天沒回到限價 -> 沒成交
+    assert M.entry_price(103, 101, 100, "limit") is None
+
+    # 未成交的訊號在 label() 要留 NaN，不能當成虧損
+    n, H = 12, 5
+    d = pd.DataFrame({"symbol": "9999.TW",
+                      "date": pd.date_range("2024-01-01", periods=n, freq="B"),
+                      "open": 110.0, "high": 112.0, "low": 109.0, "close": 100.0,
+                      "volume": 1e6})
+    lab = M.label(d, H, entry="limit")          # 天天開高且不回頭 -> 全部沒成交
+    assert lab.y.isna().all(), lab.y.tolist()
+
+
+def test_label_stop_param_multi_symbol():
+    """stop 參數曾被迴圈內的同名陣列遮蔽，第二檔起就拿到上一檔的陣列。
+    單一股票的測試抓不到，所以這裡一定要用多檔。"""
+    n, H = 40, 5
+    rng = np.random.default_rng(1)
+    frames = []
+    for s in ("1111.TW", "2222.TW", "3333.TW"):
+        cl = 100 * np.exp(np.cumsum(rng.standard_normal(n) * 0.02))
+        frames.append(pd.DataFrame({
+            "symbol": s, "date": pd.date_range("2024-01-01", periods=n, freq="B"),
+            "open": cl, "high": cl * 1.01, "low": cl * 0.99, "close": cl, "volume": 1e6}))
+    d = pd.concat(frames, ignore_index=True)
+
+    wide = M.label(d, H, stop=0.30)        # 停損極寬 -> 幾乎不會觸停損
+    tight = M.label(d, H, stop=0.005)      # 停損極窄 -> 幾乎每筆都停損
+    assert wide.stopped.mean() < tight.stopped.mean(), (wide.stopped.mean(), tight.stopped.mean())
+    assert tight.stopped.mean() > 0.9, tight.stopped.mean()
+
+
+def test_random_has_no_lift():
+    """虛無假設：隨機選股的同波動 lift 必須是 1.0。不是的話量尺本身有偏誤。"""
+    rng = np.random.default_rng(3)
+    n_day, n_sym = 60, 200
+    rows = []
+    for d in pd.date_range("2024-01-01", periods=n_day, freq="B"):
+        vol = rng.lognormal(-3, 0.6, n_sym)
+        # 命中率刻意與波動率正相關 —— 若量尺沒扣掉波動，隨機選股也會跑出 lift
+        p = 0.15 + 0.5 * (vol.argsort().argsort() / n_sym)
+        rows.append(pd.DataFrame({
+            "date": d, "symbol": [f"s{i}" for i in range(n_sym)], "vol_20d": vol,
+            "y": (rng.random(n_sym) < p).astype(float),
+            "stopped": 0.0, "net_ret": 0.0, "hold_days": 5.0,
+            "rnd": rng.random(n_sym)}))
+    test = B.vol_matched(pd.concat(rows, ignore_index=True))
+    base = test.y.mean()
+
+    # 隨機選股：兩種 lift 都該是 1.0
+    m = B.metrics(B.pick(test, "rnd", 20), base)
+    assert abs(m["vlift"] - 1.0) < 0.05, f"隨機選股的同波動 lift = {m['vlift']:.3f}"
+    assert abs(m["lift"] - 1.0) < 0.10, f"隨機選股的全市場 lift = {m['lift']:.3f}"
+
+    # 按波動率選股：這份合成資料的命中率與波動率正相關，所以全市場 lift 會虛高，
+    # 而同波動 lift 必須把這個假優勢扣回 1.0 —— 這正是量尺存在的理由。
+    v = B.metrics(B.pick(test, "vol_20d", 20), base)
+    assert v["lift"] > 1.4, f"照理該虛高，實測 {v['lift']:.3f}"
+    assert abs(v["vlift"] - 1.0) < 0.10, f"同波動 lift 沒扣乾淨：{v['vlift']:.3f}"
+
+
+def test_equity_matches_turnover():
+    """資金曲線與週轉率公式是兩條獨立路徑，必須相符 —— 這正是抓到 equity() 錯誤的方式。"""
+    # 持有天數要有變化，出場日才會散落到週末 —— 否則測不出「日曆日 vs 交易日」的差異
+    top_n, ret = 4, 0.01
+    dates = pd.date_range("2024-01-01", periods=600, freq="B").repeat(top_n)
+    holds = np.tile([3.0, 4.0, 5.0, 6.0, 7.0], len(dates) // 5 + 1)[:len(dates)]
+    picks = pd.DataFrame({"engine": "e", "net_ret": ret,
+                          "hold_days": holds, "date": dates})
+    hold = holds.mean()
+    eq = B.equity(picks, "e", top_n=top_n)
+    c_turn = B.cagr_of(ret, hold)
+    # 用曲線的點數當分母是錯的：出場日是日曆日（含週末），而 252 是交易日。
+    wrong = eq.iloc[-1] ** (252 / len(eq)) - 1
+    assert abs(B.curve_cagr(eq) - c_turn) / c_turn < 0.20, (B.curve_cagr(eq), c_turn)
+    assert abs(wrong - c_turn) / c_turn > 0.20, "這份合成資料要能凸顯兩種分母的差異"
+
+
+def test_grid_selection_rejects_one_sided():
+    """錄取條件必須拒絕「靠單邊撐起來」的格子 ——
+    集中度 TOP_N=1 與跳空過濾 4% 都是這樣騙過我的。"""
+    base = {"vlift": 1.3, "vlift_sd": 0.15, "prec": 0.3, "ret": 0.002,
+            "rnd_cagr": -0.14, "h": 7, "t": 0.12, "s": 0.05, "folds": 13}
+    cells = pd.DataFrame([
+        {**base, "cagr": 0.80, "h1": -0.05, "h2": 1.70},   # 年化最高，但前半是負的
+        {**base, "cagr": 0.60, "h1": 0.05, "h2": 1.20},    # 兩半都正但差 24 倍
+        {**base, "cagr": 0.25, "h1": 0.22, "h2": 0.28},    # 略低但兩半一致 <- 應選這個
+        {**base, "cagr": 0.30, "h1": 0.28, "h2": 0.32, "rnd_cagr": 0.25},  # 贏不過隨機
+        {**base, "cagr": 0.40, "h1": 0.35, "h2": 0.45, "vlift_sd": 0.55},  # 逐折太散
+    ])
+    w = B.select(cells)
+    assert w is not None and abs(w["cagr"] - 0.25) < 1e-9, w["cagr"]
+
+    # 每一條規則都要真的會擋
+    for i, expect in enumerate(["兩半年化都為正", "兩半差距 < 2x", None,
+                                "贏隨機 > 10pp", "逐折 std < 0.30"]):
+        bad = B._judge(cells.iloc[i])
+        if expect is None:
+            assert not bad, bad
+        else:
+            assert expect in bad, (i, bad)
+
+    # 全部落選時要回 None，不能偷偷放寬
+    assert B.select(cells[cells.h1 < 0]) is None
 
 
 def test_embargo():

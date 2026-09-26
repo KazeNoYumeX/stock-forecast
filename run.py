@@ -16,15 +16,20 @@ import model as M
 pd.set_option("display.width", 200, "display.unicode.east_asian_width", True)
 
 
-def _panel(con, horizon):
-    """讀 DB -> 特徵 -> 標籤。回傳 (帶標籤的長表, 大盤 close)。"""
+def _features(con):
+    """讀 DB -> 特徵（未標籤）。回傳 (特徵表, 大盤 close)。"""
     df = D.load_prices(con)
     bench = df[df.symbol == C.BENCHMARK].set_index("date").close
     if bench.empty:
         sys.exit("缺少大盤資料，先跑 `run.py fetch`")
-    df = df[df.symbol != C.BENCHMARK]
     con.executescript(CH.SCHEMA)
-    return M.label(M.add_chips(M.build_features(df, bench), CH.load(con)), horizon)
+    return M.add_chips(M.build_features(df[df.symbol != C.BENCHMARK], bench),
+                       CH.load(con)), bench
+
+
+def _panel(con, horizon):
+    feat, _ = _features(con)
+    return M.label(feat, horizon)
 
 
 def cmd_fetch(args):
@@ -67,10 +72,9 @@ def cmd_backtest(args):
         print(B.summarize(report, picks, h))
 
 
-def cmd_daily(args):
-    con = D.db()
-    h = args.horizon or C.HORIZONS[-1]
-    df = _panel(con, h)
+def _one_profile(con, feat, h, name, net, stop, top_n, nm):
+    """產生單一版本的候選清單。回傳 (顯示用表格, 寫入 signals 的 rows, 校準文字)。"""
+    df = M.label(feat, h, net=net, stop=stop)
     d = M.tradable(df).dropna(subset=M.PRICE_FEATURES).copy()
     dates = np.sort(d.date.unique())
     today = dates[-1]
@@ -156,7 +160,7 @@ def cmd_verify(args):
         w = g.iloc[:s.horizon]
         res, net, days = M.settle_one(
             g.open.iloc[0], w.high.values, w.low.values, w.close.values,
-            s.horizon, etf=C.is_etf(s.symbol))
+            s.horizon, up_r=up_r, dn_r=dn_r, etf=C.is_etf(s.symbol))
         out.append({"date": s.date, "horizon": s.horizon, "model": s.model,
                     "symbol": s.symbol, "rank": s.rank, "entry": g.open.iloc[0],
                     "res": res, "net": net, "days": days})
@@ -164,6 +168,8 @@ def cmd_verify(args):
     if v.empty:
         return print("訊號日之後還沒有新的報價，無法結算")
 
+        # 用訊號產生當時存下的門檻，不是當下環境變數 —— 兩個版本的停利停損不同
+        up_r, dn_r = s.target_price / s.close - 1, 1 - s.stop_price / s.close
     names = D.names(con)
     print(f"\n訊號結算（價格資料到 {last.date()}）")
     for (dt, h, mdl), g in v.groupby(["date", "horizon", "model"]):
@@ -201,15 +207,71 @@ def main():
     sc.add_argument("--market", nargs="*", choices=["TWSE", "TPEX"],
                     help="僅 official 來源適用")
     sc.set_defaults(fn=cmd_chips)
+def cmd_price(args):
+    """給實際成交價，算出對應的停利停損。ETF 與個股證交稅不同，手算容易錯。"""
+    con = D.db()
+    code = args.code.split(".")[0]
+    row = con.execute("SELECT symbol, name FROM meta WHERE code = ?", (code,)).fetchone()
+    sym, name = row if row else (code, "")
+    prof = {p[0]: p for p in C.PROFILES}.get(args.profile or C.PROFILES[0][0])
+    if prof is None:
+        sys.exit(f"未知版本，可用：{[p[0] for p in C.PROFILES]}")
+    _, ph, net, stop, _ = prof
+    tp, sl = 1 + C.raw_target(net, etf=C.is_etf(sym)), 1 - stop
+    h = args.horizon or ph
+    print(f"\n[{prof[0]}] 停利 淨{net*100:.0f}% / 停損 {stop*100:.0f}%")
+    print(f"\n{code} {name}　成交 {args.fill:.2f}")
+    print(f"  停利 {args.fill * tp:.2f} ({(tp - 1) * 100:+.2f}%)   "
+          f"停損 {args.fill * sl:.2f} ({(sl - 1) * 100:+.2f}%)   "
+          f"最長持有 {h} 個交易日")
+    print(f"  {h} 個交易日內兩條線都沒觸到就平倉出場，不要續抱。")
+
+
+def cmd_audit(args):
+    con = D.db()
+    feat, bench = _features(con)
+    print(B.audit(feat, args.horizon or C.HORIZONS[0],
+                  args.targets or [0.05, 0.08, 0.12],
+                  args.tops or [1, 2, 3, 5, 10, 20, 40], bench))
+
+
+def cmd_grid(args):
+    con = D.db()
+    feat, _ = _features(con)
+    hs = args.horizons or [7, 30]
+    ts = args.targets or [0.05, 0.12, 0.20]
+    ss = args.stops or [0.05, 0.12, 0.20]
+    print(f"格點 {len(hs) * len(ts) * len(ss)} 格（持有期 {hs} x 停利 {ts} x 停損 {ss}）")
+    print(B.grid_report(B.grid(feat, hs, ts, ss)))
+
+
     sub.add_parser("verify", help="用真實價格結算過去的訊號").set_defaults(fn=cmd_verify)
     for name, fn, helptext in [("backtest", cmd_backtest, "walk-forward 回測"),
                                ("daily", cmd_daily, "產生今日候選清單")]:
         s = sub.add_parser(name, help=helptext)
         s.add_argument("--horizon", type=int, help=f"交易日，預設 {C.HORIZONS}")
+        if name == "daily":
+            s.add_argument("--profile", nargs="*", help="只產指定版本")
         s.set_defaults(fn=fn)
     args = p.parse_args()
     args.fn(args)
 
 
 if __name__ == "__main__":
+    sp = sub.add_parser("price", help="給成交價，算對應的停利停損")
+    sp.add_argument("code")
+    sp.add_argument("fill", type=float)
+    sp.add_argument("--horizon", type=int)
+    sp.add_argument("--profile", help=f"版本，預設 {C.PROFILES[0][0]}")
+    sp.set_defaults(fn=cmd_price)
+    sg = sub.add_parser("grid", help="三維格點搜尋（持有期 x 停利 x 停損）")
+    sg.add_argument("--horizons", type=int, nargs="*")
+    sg.add_argument("--targets", type=float, nargs="*")
+    sg.add_argument("--stops", type=float, nargs="*")
+    sg.set_defaults(fn=cmd_grid)
+    sa = sub.add_parser("audit", help="穩定性審核（八項查驗）")
+    sa.add_argument("--horizon", type=int)
+    sa.add_argument("--targets", type=float, nargs="*")
+    sa.add_argument("--tops", type=int, nargs="*")
+    sa.set_defaults(fn=cmd_audit)
     main()
