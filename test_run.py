@@ -96,6 +96,38 @@ def test_neutralize():
     assert sizes.min() >= n_sym // 10 - 1 and sizes.max() <= n_sym // 10 + 1, (sizes.min(), sizes.max())
 
 
+def test_settle_matches_label():
+    """verify 的結算與回測的標籤必須給出相同判定，否則線上表現跟回測不可比。"""
+    rng = np.random.default_rng(7)
+    n, H = 120, 7
+    close = 100 * np.exp(np.cumsum(rng.standard_normal(n) * 0.03))
+    d = pd.DataFrame({
+        "symbol": "9999.TW", "date": pd.date_range("2024-01-01", periods=n, freq="B"),
+        "close": close, "open": close * (1 + rng.standard_normal(n) * 0.004),
+        "high": close * (1 + abs(rng.standard_normal(n)) * 0.012),
+        "low": close * (1 - abs(rng.standard_normal(n)) * 0.012), "volume": 1e6})
+    d[["high", "low"]] = np.c_[d[["high", "open", "close"]].max(axis=1),
+                               d[["low", "open", "close"]].min(axis=1)]
+
+    lab = M.label(d, H)
+    checked = 0
+    for i in range(n - H - 1):
+        if not np.isfinite(lab.y.iloc[i]):
+            continue
+        w = d.iloc[i + 1:i + 1 + H]
+        out, net, _ = M.settle_one(d.open.iloc[i + 1], w.high.values, w.low.values,
+                                   w.close.values, H)
+        assert (out == "win") == (lab.y.iloc[i] == 1), (i, out, lab.y.iloc[i])
+        assert abs(net - lab.net_ret.iloc[i]) < 1e-12, (i, net, lab.net_ret.iloc[i])
+        checked += 1
+    assert checked > 80, checked
+
+    # 還沒到期的部位要回報 open，不能當成到期平倉（平盤 3 根，兩邊都沒觸到）
+    flat = np.full(3, 100.0)
+    out, net, days = M.settle_one(100.0, flat, flat, flat, H)
+    assert (out, days) == ("open", 3) and np.isnan(net), (out, days, net)
+
+
 def test_embargo():
     dates = pd.date_range("2020-01-01", periods=C.TRAIN_DAYS + C.TEST_DAYS + 200, freq="B").values
     for h in C.HORIZONS:

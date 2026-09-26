@@ -73,6 +73,26 @@ def add_chips(df, chips):
     return d.replace([np.inf, -np.inf], np.nan)
 
 
+def settle_one(entry, high, low, close, horizon, etf=False):
+    """單一部位的 triple-barrier 結算，high/low/close 是進場日起算的未來 K 線。
+
+    回傳 (outcome, net, days)，outcome 為 win / loss / expire / open。
+    與 label() 必須給出相同判定（test_run.py 有斷言守著），差別只在
+    這支能處理「還沒到期」的部位，供 verify 用。
+    """
+    up_r = C.raw_target(etf=etf)
+    up, dn = entry * (1 + up_r), entry * (1 - C.STOP_LOSS)
+    n = len(close)
+    for i in range(min(n, horizon)):
+        if low[i] <= dn:                       # 同根同時觸及 -> 保守判停損
+            return "loss", C.net_return(-C.STOP_LOSS, etf=etf), i + 1
+        if high[i] >= up:
+            return "win", C.net_return(up_r, etf=etf), i + 1
+    if n >= horizon:
+        return "expire", C.net_return(close[horizon - 1] / entry - 1, etf=etf), horizon
+    return "open", np.nan, n
+
+
 def label(df, horizon):
     """Triple barrier。訊號在 t 日收盤產生，隔日開盤進場（無前視偏誤）。
 

@@ -133,6 +133,58 @@ def cmd_daily(args):
     print(f"已寫入 {path} 與 signals 表（日後可回頭驗證線上表現）")
 
 
+def cmd_verify(args):
+    """用真實價格結算過去發出的訊號，檢驗線上表現是否與回測一致。"""
+    con = D.db()
+    sig = pd.read_sql("SELECT * FROM signals", con, parse_dates=["date"])
+    if sig.empty:
+        return print("signals 表是空的，先跑 daily")
+    px = D.load_prices(con)
+    last = px.date.max()
+
+    out = []
+    for s in sig.itertuples(index=False):
+        g = px[(px.symbol == s.symbol) & (px.date > s.date)].sort_values("date")
+        if g.empty:
+            continue
+        w = g.iloc[:s.horizon]
+        res, net, days = M.settle_one(
+            g.open.iloc[0], w.high.values, w.low.values, w.close.values,
+            s.horizon, etf=C.is_etf(s.symbol))
+        out.append({"date": s.date, "horizon": s.horizon, "model": s.model,
+                    "symbol": s.symbol, "rank": s.rank, "entry": g.open.iloc[0],
+                    "res": res, "net": net, "days": days})
+    v = pd.DataFrame(out)
+    if v.empty:
+        return print("訊號日之後還沒有新的報價，無法結算")
+
+    names = D.names(con)
+    print(f"\n訊號結算（價格資料到 {last.date()}）")
+    for (dt, h, mdl), g in v.groupby(["date", "horizon", "model"]):
+        done = g[g.res != "open"]
+        print(f"\n{dt.date()}  H={h}d  model={mdl}  共 {len(g)} 檔")
+        print(f"  停利 {(g.res=='win').sum()}   停損 {(g.res=='loss').sum()}   "
+              f"到期平倉 {(g.res=='expire').sum()}   持有中 {(g.res=='open').sum()}"
+              f"（已過 {int(g[g.res=='open'].days.max()) if (g.res=='open').any() else 0} 個交易日）")
+        if len(done):
+            print(f"  已結算 {len(done)} 檔：命中率 {(done.res=='win').mean()*100:.1f}%  "
+                  f"平均淨報酬 {done.net.mean()*100:+.2f}%")
+
+    top = v[v.model == "ml_neut"].sort_values("rank") if (v.model == "ml_neut").any() else v
+    t = top.assign(名稱=top.symbol.map(names).fillna(""),
+                   代號=top.symbol.str.split(".").str[0])
+    print("\n逐檔明細（中性化引擎）:")
+    print(t[["rank", "代號", "名稱", "entry", "res", "net", "days"]]
+          .rename(columns={"rank": "#", "entry": "進場價(次日開盤)", "res": "結果",
+                           "net": "淨報酬", "days": "已過交易日"})
+          .round(4).to_string(index=False))
+
+    n_open = (v.res == "open").sum()
+    print(f"\n注意：共 {len(v)} 筆訊號、{n_open} 筆尚未到期。回測用了約 16,000 筆選股"
+          f"才得出 lift 1.16x，\n單日 20 檔在統計上沒有意義 —— 這是在驗證結算流程，"
+          f"不是在驗證策略。不要據此調參數。")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -143,6 +195,7 @@ def main():
     sc.add_argument("--market", nargs="*", choices=["TWSE", "TPEX"],
                     help="僅 official 來源適用")
     sc.set_defaults(fn=cmd_chips)
+    sub.add_parser("verify", help="用真實價格結算過去的訊號").set_defaults(fn=cmd_verify)
     for name, fn, helptext in [("backtest", cmd_backtest, "walk-forward 回測"),
                                ("daily", cmd_daily, "產生今日候選清單")]:
         s = sub.add_parser(name, help=helptext)
