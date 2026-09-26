@@ -21,8 +21,11 @@ def folds(dates, horizon):
         i += C.TEST_DAYS
 
 
-ENGINES = [("rule", "規則排序"), ("ml", "ML 純價量"),
-           ("ml_chip", "ML 價量+籌碼"), ("ml_neut", "ML 波動率中性化")]
+# 拿掉了「ML 純價量」引擎：它唯一的用途是算籌碼面的邊際貢獻，而那題已有答案
+# （+0.004 lift，見 CLAUDE.md）。留著等於每折多跑一次完整訓練。
+# 若之後加新特徵（例如月營收）要重測邊際貢獻，再把它加回來。
+ENGINES = [("rule", "規則排序"), ("ml_chip", "ML 價量+籌碼"),
+           ("ml_neut", "ML 波動率中性化")]
 
 
 def vol_matched(test):
@@ -83,7 +86,6 @@ def run(df, horizon, top_n=None, last_only=False):
         if test.empty:
             continue
         test["rule"] = M.rule_score(test)
-        test["ml"] = M.fit_predict(train, test, M.PRICE_FEATURES)
         test["ml_chip"] = M.fit_predict(train, test, M.FEATURES)
         test["ml_neut"] = M.neutralize(test, "ml_chip")
 
@@ -163,9 +165,6 @@ def summarize(report, picks, horizon):
     t["base"] = t.base.round(3)
     out.append(t.to_string(index=False))
 
-    chip_gain = report.ml_chip_vlift.mean() - report.ml_vlift.mean()
-    out.append(f"\n籌碼面貢獻（同波動基準）：{chip_gain:+.3f}"
-               f"（{(report.ml_chip_vlift > report.ml_vlift).mean()*100:.0f}% 的折數贏過純價量）")
     neut = report.ml_neut_vlift.mean()
     out.append(f"中性化後：同波動lift {neut:.2f}x，"
                f"{(report.ml_neut_vlift > 1).mean()*100:.0f}% 的折數 > 1.0")
