@@ -96,17 +96,21 @@ def cmd_daily(args):
 
     nm = D.names(con)
     top = live.head(C.TOP_N).copy()
-    tgt = top.symbol.map(lambda s: C.raw_target(etf=C.is_etf(s.split(".")[0])))
+    # 算一次，表格與 signals 表共用。ETF 證交稅較低 -> 倍數不是常數。
+    top["tp_mult"] = 1 + top.symbol.map(lambda s: C.raw_target(etf=C.is_etf(s)))
+    top["sl_mult"] = 1 - C.STOP_LOSS
     out = pd.DataFrame({
         "代號": top.symbol.str.split(".").str[0],
         "名稱": top.symbol.map(nm).fillna(""),
         "收盤": top.close.round(2),
         "中性化分": top.score.round(3),
-        "ML機率": top.ml.round(3),
         "波動分層": top.vol_q.astype("Int64"),
         "20日均額(億)": (top.turnover20 / 1e8).round(2),
-        "停利價": (top.close * (1 + tgt)).round(2),
-        "停損價": (top.close * (1 - C.STOP_LOSS)).round(2),
+        "典型跳空%": (top.gap_60 * 100).round(2),
+        "停利×": top.tp_mult.round(4),
+        "停損×": top.sl_mult.round(4),
+        "參考停利價": (top.close * top.tp_mult).round(2),
+        "參考停損價": (top.close * top.sl_mult).round(2),
         "最長持有": f"{h}d",
     }).reset_index(drop=True)
     out.index += 1
@@ -118,16 +122,18 @@ def cmd_daily(args):
     print(out.to_string())
     if calib:
         print("\n" + calib)
-    print("這是機率排序，不是保證。停利/停損價請照表執行，超過最長持有天數就出場。")
-    print("排序已做波動率中性化：同波動分層內比較，避免只是挑到波動大的股票。")
+    print("\n進場＝次日開盤市價。回測量的就是這個價位，不要改掛限價單 ——")
+    print("掛限價等於自動濾掉所有跳空上漲的標的，那是另一套策略，上面的數字不適用。")
+    print("成交後請用自己的成交價重算：停利 = 成交價 × 停利×，停損 = 成交價 × 停損×。")
+    print("表上的參考價只是以收盤估的範圍；開盤會偏離多少，看「典型跳空%」欄。")
+    print("這是機率排序不是保證；排序已做波動率中性化（同波動分層內比較）。")
 
     os.makedirs(f"{C.DATA_DIR}/signals", exist_ok=True)
     path = f"{C.DATA_DIR}/signals/{ts}_h{h}.csv"
     out.to_csv(path, index_label="rank", encoding="utf-8-sig")
-    rows = [(str(ts), r.symbol, h, "ml_neut", float(r.score), i + 1,
-             float(r.close), float(r.close * (1 + C.raw_target(etf=C.is_etf(r.symbol.split(".")[0])))),
-             float(r.close * (1 - C.STOP_LOSS)))
-            for i, r in enumerate(top.itertuples(index=False))]
+    rows = [(str(ts), t.symbol, h, "ml_neut", float(t.score), i + 1,
+             float(t.close), float(t.close * t.tp_mult), float(t.close * t.sl_mult))
+            for i, t in enumerate(top.itertuples(index=False))]
     con.executemany("INSERT OR REPLACE INTO signals VALUES (?,?,?,?,?,?,?,?,?)", rows)
     con.commit()
     print(f"已寫入 {path} 與 signals 表（日後可回頭驗證線上表現）")

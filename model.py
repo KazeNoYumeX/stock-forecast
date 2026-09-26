@@ -39,6 +39,9 @@ def build_features(df, bench):
         g["vol_ratio"] = v.rolling(5).mean() / v.rolling(60).mean()
         g["high60_gap"] = c / c.rolling(60).max() - 1
         g["turnover20"] = (c * v).rolling(20).mean()
+        # 顯示用，不是特徵：這檔開盤通常偏離前一日收盤多少。
+        # 訊號在收盤產生、次日開盤進場，使用者需要知道成交價的浮動範圍。
+        g["gap_60"] = (g.open / c.shift(1) - 1).abs().rolling(60).mean()
         out.append(g)
 
     f = pd.concat(out, ignore_index=True)
