@@ -39,9 +39,11 @@ def build_features(df, bench):
         g["vol_ratio"] = v.rolling(5).mean() / v.rolling(60).mean()
         g["high60_gap"] = c / c.rolling(60).max() - 1
         g["turnover20"] = (c * v).rolling(20).mean()
-        # 顯示用，不是特徵：這檔開盤通常偏離前一日收盤多少。
-        # 訊號在收盤產生、次日開盤進場，使用者需要知道成交價的浮動範圍。
-        g["gap_60"] = (g.open / c.shift(1) - 1).abs().rolling(60).mean()
+        # 顯示用，不是特徵：這檔開盤會落在什麼價位區間。
+        # 用 p10/p90 的實際分位數而非平均絕對值 —— 平均值沒辦法換算成價位。
+        gap = g.open / c.shift(1) - 1
+        g["gap_lo"] = gap.rolling(250, min_periods=60).quantile(0.10)
+        g["gap_hi"] = gap.rolling(250, min_periods=60).quantile(0.90)
         out.append(g)
 
     f = pd.concat(out, ignore_index=True)
@@ -79,12 +81,12 @@ def add_chips(df, chips):
 def settle_one(entry, high, low, close, horizon, up_r=None, dn_r=None, etf=False):
     """單一部位的 triple-barrier 結算，high/low/close 是進場日起算的未來 K 線。
 
-    回傳 (outcome, net, days)，outcome 為 win / loss / expire / open。
-    與 label() 必須給出相同判定（test_run.py 有斷言守著），差別只在
     up_r / dn_r 必須顯式傳入訊號「產生當時」的門檻，不能讀當下的環境變數 ——
     並行追蹤多個版本時，用 A 版的設定去結算 B 版的訊號會全錯而且不會報錯。
     未給則退回目前設定（單一版本時的方便用法）。
 
+    回傳 (outcome, net, days)，outcome 為 win / loss / expire / open。
+    與 label() 必須給出相同判定（test_run.py 有斷言守著），差別只在
     這支能處理「還沒到期」的部位，供 verify 用。
     """
     up_r = C.raw_target(etf=etf) if up_r is None else up_r

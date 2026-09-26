@@ -76,71 +76,81 @@ def _one_profile(con, feat, h, name, net, stop, top_n, nm):
     """產生單一版本的候選清單。回傳 (顯示用表格, 寫入 signals 的 rows, 校準文字)。"""
     df = M.label(feat, h, net=net, stop=stop)
     d = M.tradable(df).dropna(subset=M.PRICE_FEATURES).copy()
-    dates = np.sort(d.date.unique())
-    today = dates[-1]
+    today = np.sort(d.date.unique())[-1]
 
-    # 用最後一折做校準，讓報表能誠實說出「這份清單歷史命中率是多少」
+    report, _ = B.run(df, h, top_n=top_n, last_only=True)
     calib = ""
-    report, _ = B.run(df, h, last_only=True)
     if not report.empty:
         last = report.iloc[-1]
-        calib = (f"校準（最近一折 {last.test_start}~{last.test_end}）："
-                 f"base {last.base*100:.1f}%  規則 {last.rule_prec*100:.1f}%  "
-                 f"ML+籌碼 {last.ml_chip_prec*100:.1f}%  中性化 {last.ml_neut_prec*100:.1f}%"
-                 f"（同波動 lift {last.ml_neut_vlift:.2f}x）")
+        cg = B.cagr_of(last.ml_neut_ret, last.ml_neut_hold)
+        calib = (f"  最近一折 {last.test_start}~{last.test_end}："
+                 f"base {last.base*100:.1f}%　命中 {last.ml_neut_prec*100:.1f}%"
+                 f"　同波動 lift {last.ml_neut_vlift:.2f}x　換算年化 {cg*100:+.1f}%")
 
-    train = d[d.date < today - pd.Timedelta(days=2 * h)].dropna(subset=["y"])  # embargo
+    train = d[d.date < today - pd.Timedelta(days=2 * h)].dropna(subset=["y"])
     live = d[d.date == today].copy()
     live["ml"] = M.fit_predict(train, live, M.FEATURES)
     live["rule"] = M.rule_score(live)
-    # 中性化後才是誠實的排序：未中性化的分數有 95% 的表面優勢來自「挑波動大的股票」
     live["score"] = M.neutralize(live, "ml") if live.ml.notna().any() else live.rule
     live["vol_q"] = M.vol_bucket(live)
-    live = live.sort_values("score", ascending=False)
+    top = live.sort_values("score", ascending=False).head(top_n).copy()
+    top["tp_mult"] = 1 + top.symbol.map(lambda s: C.raw_target(net, etf=C.is_etf(s)))
+    top["sl_mult"] = 1 - stop
 
-    nm = D.names(con)
-    top = live.head(C.TOP_N).copy()
-    # 算一次，表格與 signals 表共用。ETF 證交稅較低 -> 倍數不是常數。
-    top["tp_mult"] = 1 + top.symbol.map(lambda s: C.raw_target(etf=C.is_etf(s)))
-    top["sl_mult"] = 1 - C.STOP_LOSS
     out = pd.DataFrame({
         "代號": top.symbol.str.split(".").str[0],
         "名稱": top.symbol.map(nm).fillna(""),
-        "收盤": top.close.round(2),
+        "基準收盤": top.close.round(2),
         "中性化分": top.score.round(3),
         "波動分層": top.vol_q.astype("Int64"),
         "20日均額(億)": (top.turnover20 / 1e8).round(2),
-        "典型跳空%": (top.gap_60 * 100).round(2),
-        "停利×": top.tp_mult.round(4),
-        "停損×": top.sl_mult.round(4),
-        "參考停利價": (top.close * top.tp_mult).round(2),
-        "參考停損價": (top.close * top.sl_mult).round(2),
+        "開盤預估低": (top.close * (1 + top.gap_lo)).round(2),
+        "開盤預估高": (top.close * (1 + top.gap_hi)).round(2),
+        "停利%": ((top.tp_mult - 1) * 100).map("{:+.2f}".format),
+        "停損%": ((top.sl_mult - 1) * 100).map("{:.2f}".format),
         "最長持有": f"{h}d",
     }).reset_index(drop=True)
     out.index += 1
 
     ts = pd.Timestamp(today).date()
-    regime = "多頭" if live.regime.iloc[0] > 0 else "空頭 (TWII < MA60)"
-    print(f"\n{ts}  H={h}d  毛門檻 {C.raw_target()*100:.2f}%（淨 {C.NET_TARGET*100:.1f}%，已扣手續費+證交稅+滑價）")
-    print(f"market regime: {regime}   候選池 {len(live)} 檔")
-    print(out.to_string())
-    if calib:
-        print("\n" + calib)
-    print("\n進場＝次日開盤市價。回測量的就是這個價位，不要改掛限價單 ——")
-    print("掛限價等於自動濾掉所有跳空上漲的標的，那是另一套策略，上面的數字不適用。")
-    print("成交後請用自己的成交價重算：停利 = 成交價 × 停利×，停損 = 成交價 × 停損×。")
-    print("表上的參考價只是以收盤估的範圍；開盤會偏離多少，看「典型跳空%」欄。")
-    print("這是機率排序不是保證；排序已做波動率中性化（同波動分層內比較）。")
-
-    os.makedirs(f"{C.DATA_DIR}/signals", exist_ok=True)
-    path = f"{C.DATA_DIR}/signals/{ts}_h{h}.csv"
-    out.to_csv(path, index_label="rank", encoding="utf-8-sig")
-    rows = [(str(ts), t.symbol, h, "ml_neut", float(t.score), i + 1,
+    rows = [(str(ts), t.symbol, h, name, float(t.score), i + 1,
              float(t.close), float(t.close * t.tp_mult), float(t.close * t.sl_mult))
             for i, t in enumerate(top.itertuples(index=False))]
-    con.executemany("INSERT OR REPLACE INTO signals VALUES (?,?,?,?,?,?,?,?,?)", rows)
-    con.commit()
-    print(f"已寫入 {path} 與 signals 表（日後可回頭驗證線上表現）")
+    return out, rows, calib, ts, top
+
+
+def cmd_daily(args):
+    con = D.db()
+    feat, _ = _features(con)
+    nm = D.names(con)
+    profiles = [p for p in C.PROFILES if not args.profile or p[0] in args.profile]
+    if not profiles:
+        sys.exit(f"沒有符合的版本，可用：{[p[0] for p in C.PROFILES]}")
+
+    os.makedirs(f"{C.DATA_DIR}/signals", exist_ok=True)
+    for name, ph, net, stop, top_n in profiles:
+        h = args.horizon or ph
+        out, rows, calib, ts, top = _one_profile(con, feat, h, name, net, stop, top_n, nm)
+        print(f"\n{'=' * 70}")
+        print(f"[{name}]  {ts}  H={h}d　停利 淨{net*100:.0f}%（毛 {C.raw_target(net)*100:.2f}%）"
+              f"　停損 {stop*100:.0f}%　取前 {top_n} 檔")
+        print('=' * 70)
+        print(out.to_string())
+        if calib:
+            print(calib)
+        path = f"{C.DATA_DIR}/signals/{ts}_h{h}_{name}.csv"
+        out.to_csv(path, index_label="rank", encoding="utf-8-sig")
+        con.executemany("INSERT OR REPLACE INTO signals VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        con.commit()
+        print(f"  -> {path}")
+
+    ex = top.iloc[0]
+    exp = float(ex.close * (1 + (ex.gap_lo + ex.gap_hi) / 2))
+    print(f"\n進場＝次日開盤市價。「開盤預估低/高」是該檔近 250 日跳空的 80% 範圍，")
+    print("只是讓你知道成交價會落在哪 —— 不是進場條件。審核已測過「跳空太多就不買」")
+    print("和「掛限價等回檔」，樣本放大後兩者都無效，所以不要自行加條件。")
+    print(f"成交後用 `run.py price <代號> <成交價> --profile <版本>` 算停利停損。")
+    print("兩個版本都會寫進 signals 表，`run.py verify` 會各自結算後並列比較。")
 
 
 def cmd_verify(args):
@@ -158,6 +168,8 @@ def cmd_verify(args):
         if g.empty:
             continue
         w = g.iloc[:s.horizon]
+        # 用訊號產生當時存下的門檻，不是當下環境變數 —— 兩個版本的停利停損不同
+        up_r, dn_r = s.target_price / s.close - 1, 1 - s.stop_price / s.close
         res, net, days = M.settle_one(
             g.open.iloc[0], w.high.values, w.low.values, w.close.values,
             s.horizon, up_r=up_r, dn_r=dn_r, etf=C.is_etf(s.symbol))
@@ -168,8 +180,6 @@ def cmd_verify(args):
     if v.empty:
         return print("訊號日之後還沒有新的報價，無法結算")
 
-        # 用訊號產生當時存下的門檻，不是當下環境變數 —— 兩個版本的停利停損不同
-        up_r, dn_r = s.target_price / s.close - 1, 1 - s.stop_price / s.close
     names = D.names(con)
     print(f"\n訊號結算（價格資料到 {last.date()}）")
     for (dt, h, mdl), g in v.groupby(["date", "horizon", "model"]):
@@ -197,16 +207,6 @@ def cmd_verify(args):
           f"不是在驗證策略。不要據此調參數。")
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("fetch", help="更新 universe 與歷史價").set_defaults(fn=cmd_fetch)
-    sc = sub.add_parser("chips", help="回補籌碼面（法人買賣超、融資券）")
-    sc.add_argument("--source", choices=["finmind", "official"], default="finmind",
-                    help="finmind=一檔一請求拿全歷史（回補用）；official=一天一請求拿全市場（每日增量用）")
-    sc.add_argument("--market", nargs="*", choices=["TWSE", "TPEX"],
-                    help="僅 official 來源適用")
-    sc.set_defaults(fn=cmd_chips)
 def cmd_price(args):
     """給實際成交價，算出對應的停利停損。ETF 與個股證交稅不同，手算容易錯。"""
     con = D.db()
@@ -245,19 +245,17 @@ def cmd_grid(args):
     print(B.grid_report(B.grid(feat, hs, ts, ss)))
 
 
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("fetch", help="更新 universe 與歷史價").set_defaults(fn=cmd_fetch)
+    sc = sub.add_parser("chips", help="回補籌碼面（法人買賣超、融資券）")
+    sc.add_argument("--source", choices=["finmind", "official"], default="finmind",
+                    help="finmind=一檔一請求拿全歷史（回補用）；official=一天一請求拿全市場（每日增量用）")
+    sc.add_argument("--market", nargs="*", choices=["TWSE", "TPEX"],
+                    help="僅 official 來源適用")
+    sc.set_defaults(fn=cmd_chips)
     sub.add_parser("verify", help="用真實價格結算過去的訊號").set_defaults(fn=cmd_verify)
-    for name, fn, helptext in [("backtest", cmd_backtest, "walk-forward 回測"),
-                               ("daily", cmd_daily, "產生今日候選清單")]:
-        s = sub.add_parser(name, help=helptext)
-        s.add_argument("--horizon", type=int, help=f"交易日，預設 {C.HORIZONS}")
-        if name == "daily":
-            s.add_argument("--profile", nargs="*", help="只產指定版本")
-        s.set_defaults(fn=fn)
-    args = p.parse_args()
-    args.fn(args)
-
-
-if __name__ == "__main__":
     sp = sub.add_parser("price", help="給成交價，算對應的停利停損")
     sp.add_argument("code")
     sp.add_argument("fill", type=float)
@@ -274,4 +272,16 @@ if __name__ == "__main__":
     sa.add_argument("--targets", type=float, nargs="*")
     sa.add_argument("--tops", type=int, nargs="*")
     sa.set_defaults(fn=cmd_audit)
+    for name, fn, helptext in [("backtest", cmd_backtest, "walk-forward 回測"),
+                               ("daily", cmd_daily, "產生今日候選清單")]:
+        s = sub.add_parser(name, help=helptext)
+        s.add_argument("--horizon", type=int, help=f"交易日，預設 {C.HORIZONS}")
+        if name == "daily":
+            s.add_argument("--profile", nargs="*", help="只產指定版本")
+        s.set_defaults(fn=fn)
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
     main()
