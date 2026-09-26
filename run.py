@@ -181,10 +181,12 @@ def cmd_verify(args):
         return print("訊號日之後還沒有新的報價，無法結算")
 
     names = D.names(con)
+    live = {p[0] for p in C.PROFILES}
     print(f"\n訊號結算（價格資料到 {last.date()}）")
     for (dt, h, mdl), g in v.groupby(["date", "horizon", "model"]):
+        tag = "" if mdl in live else "　<- 舊實驗，參數已不同，不要跟現行版本混著看"
         done = g[g.res != "open"]
-        print(f"\n{dt.date()}  H={h}d  model={mdl}  共 {len(g)} 檔")
+        print(f"\n{dt.date()}  H={h}d  model={mdl}  共 {len(g)} 檔{tag}")
         print(f"  停利 {(g.res=='win').sum()}   停損 {(g.res=='loss').sum()}   "
               f"到期平倉 {(g.res=='expire').sum()}   持有中 {(g.res=='open').sum()}"
               f"（已過 {int(g[g.res=='open'].days.max()) if (g.res=='open').any() else 0} 個交易日）")
@@ -192,19 +194,22 @@ def cmd_verify(args):
             print(f"  已結算 {len(done)} 檔：命中率 {(done.res=='win').mean()*100:.1f}%  "
                   f"平均淨報酬 {done.net.mean()*100:+.2f}%")
 
-    top = v[v.model == "ml_neut"].sort_values("rank") if (v.model == "ml_neut").any() else v
-    t = top.assign(名稱=top.symbol.map(names).fillna(""),
-                   代號=top.symbol.str.split(".").str[0])
-    print("\n逐檔明細（中性化引擎）:")
-    print(t[["rank", "代號", "名稱", "entry", "res", "net", "days"]]
-          .rename(columns={"rank": "#", "entry": "進場價(次日開盤)", "res": "結果",
-                           "net": "淨報酬", "days": "已過交易日"})
-          .round(4).to_string(index=False))
+    live = {p[0] for p in C.PROFILES}
+    for mdl, g in v[v.model.isin(live)].groupby("model"):
+        t = g.sort_values(["date", "rank"]).assign(
+            名稱=g.symbol.map(names).fillna(""), 代號=g.symbol.str.split(".").str[0])
+        print(f"\n逐檔明細 [{mdl}]:")
+        print(t[["rank", "代號", "名稱", "entry", "res", "net", "days"]]
+              .rename(columns={"rank": "#", "entry": "進場價(次日開盤)", "res": "結果",
+                               "net": "淨報酬", "days": "已過交易日"})
+              .round(4).to_string(index=False))
 
-    n_open = (v.res == "open").sum()
-    print(f"\n注意：共 {len(v)} 筆訊號、{n_open} 筆尚未到期。回測用了約 16,000 筆選股"
-          f"才得出 lift 1.16x，\n單日 20 檔在統計上沒有意義 —— 這是在驗證結算流程，"
-          f"不是在驗證策略。不要據此調參數。")
+    n_live = int(v.model.isin(live).sum())
+    n_open = int((v.res == "open").sum())
+    print(f"\n現行版本已結算 {n_live} 筆（另有 {len(v) - n_live} 筆舊實驗）、"
+          f"{n_open} 筆尚未到期。")
+    print("回測需要約 16,000 筆選股才得出可信的 lift，單日數十檔在統計上等於零資訊。")
+    print("這是在驗證結算流程，不是在驗證策略 —— 累積約 1,200 筆前不要據此調參數。")
 
 
 def cmd_price(args):
