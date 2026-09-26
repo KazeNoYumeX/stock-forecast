@@ -154,9 +154,14 @@ def summarize(report, picks, horizon):
                    f"比值 {s/sb if sb else float('nan'):.2f}x")
     out.append("  比值 > 1 代表 picks 也比同儕更容易被掃出場 -> 抓到的是波動而非方向。")
 
-    out.append("\n逐折 同波動lift（檢查是不是只靠某一段行情撐起來）:")
-    out.append(report[["test_start", "base"] + [f"{e}_vlift" for e, _ in ENGINES]]
-               .round(3).to_string(index=False))
+    out.append("\n逐折表現（檢查是不是只靠某一段行情撐起來）:")
+    t = report[["test_start", "base"]].copy()
+    t["lift"] = report.ml_neut_vlift.round(2)
+    t["每筆%"] = (report.ml_neut_ret * 100).round(2)
+    t["年化%"] = [round(cagr_of(r, h) * 100, 1) for r, h in
+                 zip(report.ml_neut_ret, report.ml_neut_hold)]
+    t["base"] = t.base.round(3)
+    out.append(t.to_string(index=False))
 
     chip_gain = report.ml_chip_vlift.mean() - report.ml_vlift.mean()
     out.append(f"\n籌碼面貢獻（同波動基準）：{chip_gain:+.3f}"

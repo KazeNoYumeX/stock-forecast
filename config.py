@@ -21,8 +21,10 @@ MIN_TURNOVER = _env("MIN_TURNOVER", 5e7)         # 日均成交額下限（避�
 HISTORY_YEARS = int(os.getenv("HISTORY_YEARS", 6))
 
 # --- 回測 ---
-TRAIN_DAYS = 504   # ~2 年
-TEST_DAYS = 63     # ~1 季
+# 可用環境變數覆寫：縮短訓練期能讓測試折涵蓋更早的期間（例如 2022 年空頭），
+# 代價是模型看到的歷史較少。
+TRAIN_DAYS = int(os.getenv("TRAIN_DAYS", 504))   # ~2 年
+TEST_DAYS = int(os.getenv("TEST_DAYS", 63))      # ~1 季
 
 # 並行追蹤的版本。往前走的真實訊號是唯一沒被參數掃描污染的資料，
 # 所以兩個版本同時發訊號、分別結算，讓市場決定誰對。
