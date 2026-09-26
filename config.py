@@ -30,8 +30,9 @@ WATCHLIST = os.path.join(DATA_DIR, "watchlist.txt")
 BENCHMARK = "^TWII"
 
 
-def is_etf(code: str) -> bool:
-    return code.startswith("00")
+def is_etf(symbol: str) -> bool:
+    """吃 "0050.TW" 或 "0050" 都可以；ETF 證交稅 0.1%，個股 0.3%。"""
+    return symbol.split(".")[0].startswith("00")
 
 
 def raw_target(net=None, etf=False):

@@ -102,7 +102,7 @@ def label(df, horizon):
     out = []
     for sym, g in df.groupby("symbol", sort=False):
         g = g.sort_values("date").copy()
-        etf = C.is_etf(sym.split(".")[0])
+        etf = C.is_etf(sym)
         up_r, dn_r = C.raw_target(etf=etf), C.STOP_LOSS
         o, hi, lo, cl = (g[k].values for k in ("open", "high", "low", "close"))
         n = len(g)
