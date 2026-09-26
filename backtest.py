@@ -49,9 +49,10 @@ def run(df, horizon, top_n=None):
         # 同日同波動率分層的命中率＝正確的對照組。用 leave-one-out，
         # 否則每檔都會把自己算進自己的基準裡。
         test["vol_q"] = M.vol_bucket(test)
-        grp = test.groupby(["date", "vol_q"]).y
-        cnt = grp.transform("count")
-        test["vol_base"] = ((grp.transform("sum") - test.y) / (cnt - 1)).where(cnt > 1)
+        cnt = test.groupby(["date", "vol_q"]).y.transform("count")
+        for col, dst in (("y", "vol_base"), ("stopped", "vol_stop_base")):
+            s = test.groupby(["date", "vol_q"])[col].transform("sum")
+            test[dst] = ((s - test[col]) / (cnt - 1)).where(cnt > 1)
 
         base = test.y.mean()
         r = {"test_start": str(pd.Timestamp(te_d[0]).date()),
@@ -65,7 +66,10 @@ def run(df, horizon, top_n=None):
             r[f"{eng}_vbase"] = vbase
             r[f"{eng}_vlift"] = sel.y.mean() / vbase if vbase else np.nan
             r[f"{eng}_vq"] = sel.vol_q.mean()
+            r[f"{eng}_stop"] = sel.stopped.mean()
+            r[f"{eng}_stopbase"] = sel.vol_stop_base.mean()
             r[f"{eng}_ret"] = sel.net_ret.mean()
+            r[f"{eng}_hold"] = sel.hold_days.mean()
             sel = sel.assign(engine=eng, fold=r["test_start"])
             picks.append(sel)
         rows.append(r)

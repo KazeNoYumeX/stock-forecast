@@ -109,6 +109,7 @@ def label(df, horizon):
         y = np.full(n, np.nan)
         ret = np.full(n, np.nan)
         days = np.full(n, np.nan)
+        stop = np.full(n, np.nan)      # 1=觸停損出場，用來分辨「沒賺到」是停損還是到期
 
         # ponytail: 每檔一個 python 迴圈（~1250 圈 x 300 檔）。先觸哪個 barrier 難以
         # 純向量化；實測數秒內完成。若股票池擴到數千檔再考慮 numba。
@@ -121,14 +122,14 @@ def label(df, horizon):
             t_up = np.argmax(w_hi >= up) if (w_hi >= up).any() else n
             t_dn = np.argmax(w_lo <= dn) if (w_lo <= dn).any() else n
             if t_dn <= t_up and t_dn < n:          # 停損先到（或同日，保守）
-                y[i], raw, days[i] = 0, -dn_r, t_dn + 1
+                y[i], raw, days[i], stop[i] = 0, -dn_r, t_dn + 1, 1
             elif t_up < n:                          # 停利達陣
-                y[i], raw, days[i] = 1, up_r, t_up + 1
+                y[i], raw, days[i], stop[i] = 1, up_r, t_up + 1, 0
             else:                                   # 到期平倉
-                y[i], raw, days[i] = 0, cl[i + horizon] / entry - 1, horizon
+                y[i], raw, days[i], stop[i] = 0, cl[i + horizon] / entry - 1, horizon, 0
             ret[i] = C.net_return(raw, etf=etf)
 
-        g["y"], g["net_ret"], g["hold_days"] = y, ret, days
+        g["y"], g["net_ret"], g["hold_days"], g["stopped"] = y, ret, days, stop
         out.append(g)
     return pd.concat(out, ignore_index=True)
 
