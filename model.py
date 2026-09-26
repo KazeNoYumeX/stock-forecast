@@ -76,19 +76,24 @@ def add_chips(df, chips):
     return d.replace([np.inf, -np.inf], np.nan)
 
 
-def settle_one(entry, high, low, close, horizon, etf=False):
+def settle_one(entry, high, low, close, horizon, up_r=None, dn_r=None, etf=False):
     """單一部位的 triple-barrier 結算，high/low/close 是進場日起算的未來 K 線。
 
     回傳 (outcome, net, days)，outcome 為 win / loss / expire / open。
     與 label() 必須給出相同判定（test_run.py 有斷言守著），差別只在
+    up_r / dn_r 必須顯式傳入訊號「產生當時」的門檻，不能讀當下的環境變數 ——
+    並行追蹤多個版本時，用 A 版的設定去結算 B 版的訊號會全錯而且不會報錯。
+    未給則退回目前設定（單一版本時的方便用法）。
+
     這支能處理「還沒到期」的部位，供 verify 用。
     """
-    up_r = C.raw_target(etf=etf)
-    up, dn = entry * (1 + up_r), entry * (1 - C.STOP_LOSS)
+    up_r = C.raw_target(etf=etf) if up_r is None else up_r
+    dn_r = C.STOP_LOSS if dn_r is None else dn_r
+    up, dn = entry * (1 + up_r), entry * (1 - dn_r)
     n = len(close)
     for i in range(min(n, horizon)):
         if low[i] <= dn:                       # 同根同時觸及 -> 保守判停損
-            return "loss", C.net_return(-C.STOP_LOSS, etf=etf), i + 1
+            return "loss", C.net_return(-dn_r, etf=etf), i + 1
         if high[i] >= up:
             return "win", C.net_return(up_r, etf=etf), i + 1
     if n >= horizon:
@@ -96,43 +101,67 @@ def settle_one(entry, high, low, close, horizon, etf=False):
     return "open", np.nan, n
 
 
-def label(df, horizon):
-    """Triple barrier。訊號在 t 日收盤產生，隔日開盤進場（無前視偏誤）。
+def entry_price(nxt_open, nxt_low, prev_close, mode="open", cap=None):
+    """決定進場價，回傳 None 代表沒成交。
+
+    open   次日開盤市價。回測基準 —— 無論開在哪都買。
+    cap    同上，但開盤漲幅超過 cap 就放棄（測「跳空追高是否該濾掉」）。
+    limit  掛前一日收盤。已經開在限價之下就用開盤成交（買得更便宜，不是限價），
+           否則要盤中低點觸及限價才成交（測「等好價格」這個直覺）。
+    """
+    if mode == "open":
+        return nxt_open
+    if mode == "cap":
+        if not prev_close > 0:
+            return None
+        return nxt_open if nxt_open / prev_close - 1 <= cap else None
+    if mode == "limit":
+        if nxt_open <= prev_close:
+            return nxt_open
+        return prev_close if nxt_low <= prev_close else None
+    raise ValueError(f"未知的進場模式 {mode!r}")
+
+
+def label(df, horizon, net=None, entry="open", cap=None, stop=None):
+    """Triple barrier。訊號在 t 日收盤產生，隔日進場（無前視偏誤）。
 
     y=1 先觸停利、y=0 先觸停損或到期平倉。同根 K 同時觸及 -> 判停損（保守）。
-    回傳增加 y / net_ret / hold_days 三欄。
+    未成交的訊號 y=NaN，會被下游的 dropna 自然排除。
+    net 可覆寫停利目標，讓單一 process 內能掃不同目標。
+    回傳增加 y / net_ret / hold_days / stopped 四欄。
     """
     out = []
     for sym, g in df.groupby("symbol", sort=False):
         g = g.sort_values("date").copy()
         etf = C.is_etf(sym)
-        up_r, dn_r = C.raw_target(etf=etf), C.STOP_LOSS
+        up_r = C.raw_target(net, etf=etf)
+        dn_r = C.STOP_LOSS if stop is None else stop
         o, hi, lo, cl = (g[k].values for k in ("open", "high", "low", "close"))
         n = len(g)
         y = np.full(n, np.nan)
         ret = np.full(n, np.nan)
         days = np.full(n, np.nan)
-        stop = np.full(n, np.nan)      # 1=觸停損出場，用來分辨「沒賺到」是停損還是到期
+        stopped = np.full(n, np.nan)   # 1=觸停損出場，用來分辨「沒賺到」是停損還是到期
 
         # ponytail: 每檔一個 python 迴圈（~1250 圈 x 300 檔）。先觸哪個 barrier 難以
         # 純向量化；實測數秒內完成。若股票池擴到數千檔再考慮 numba。
         for i in range(n - horizon - 1):
-            entry = o[i + 1]
-            if not entry > 0:
+            px = entry_price(o[i + 1], lo[i + 1], cl[i], entry, cap)
+            if px is None or not px > 0:
                 continue
-            up, dn = entry * (1 + up_r), entry * (1 - dn_r)
+            up, dn = px * (1 + up_r), px * (1 - dn_r)
             w_hi, w_lo = hi[i + 1:i + 1 + horizon], lo[i + 1:i + 1 + horizon]
             t_up = np.argmax(w_hi >= up) if (w_hi >= up).any() else n
             t_dn = np.argmax(w_lo <= dn) if (w_lo <= dn).any() else n
             if t_dn <= t_up and t_dn < n:          # 停損先到（或同日，保守）
-                y[i], raw, days[i], stop[i] = 0, -dn_r, t_dn + 1, 1
+                y[i], raw, days[i], stopped[i] = 0, -dn_r, t_dn + 1, 1
             elif t_up < n:                          # 停利達陣
-                y[i], raw, days[i], stop[i] = 1, up_r, t_up + 1, 0
+                y[i], raw, days[i], stopped[i] = 1, up_r, t_up + 1, 0
             else:                                   # 到期平倉
-                y[i], raw, days[i], stop[i] = 0, cl[i + horizon] / entry - 1, horizon, 0
+                y[i], raw, days[i], stopped[i] = 0, cl[i + horizon] / px - 1, horizon, 0
             ret[i] = C.net_return(raw, etf=etf)
 
-        g["y"], g["net_ret"], g["hold_days"], g["stopped"] = y, ret, days, stop
+        g["y"], g["net_ret"], g["hold_days"], g["stopped"] = y, ret, days, stopped
         out.append(g)
     return pd.concat(out, ignore_index=True)
 
