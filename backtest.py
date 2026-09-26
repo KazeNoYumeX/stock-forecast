@@ -177,13 +177,15 @@ def summarize(report, picks, horizon):
 
 # --- 穩定性審核 --------------------------------------------------------
 
-def _folds_of(feat, horizon, top_ns, net=None, entry="open", cap=None, stop=None, seed=0):
+def _folds_of(feat, horizon, top_ns, net=None, entry="open", cap=None, stop=None,
+              exit="barrier", trail=None, seed=0):
     """標籤一次、每折訓練一次，然後一次評估所有 top_n。
 
     top_n 只影響「取前幾名」，不影響標籤與訓練 —— 每個 top_n 重跑整個回測是浪費。
     回傳 (逐折逐 top_n 的長表, 選股明細)。
     """
-    d = M.tradable(M.label(feat, horizon, net=net, entry=entry, cap=cap, stop=stop))
+    d = M.tradable(M.label(feat, horizon, net=net, entry=entry, cap=cap, stop=stop,
+                           exit=exit, trail=trail))
     d = d.dropna(subset=["y"] + M.PRICE_FEATURES).copy()
     n_sig = len(d)
     dates = np.sort(d.date.unique())
@@ -350,14 +352,21 @@ def _half(r, folds_all, lo, hi):
     return cagr_of(s.ret.mean(), s.hold.mean()) if len(s) else np.nan
 
 
-def grid(feat, horizons, targets, stops, top_n=None):
-    """逐格重新標籤 + 訓練。top_n 只影響取前幾名，所以固定一個值就好。"""
+def grid(feat, horizons, targets, stops, top_n=None, trails=None):
+    """逐格重新標籤 + 訓練。top_n 只影響取前幾名，所以固定一個值就好。
+
+    trails 有給就跑移動停損（沒有停利天花板，一個參數取代停利與停損），
+    此時 targets / stops 不適用。
+    """
     top_n = top_n or C.TOP_N
+    combos = ([(t, None, "trail", t) for t in trails] if trails else
+              [(t, s, "barrier", None) for t in targets for s in stops])
     cells = []
     for h in horizons:
-        for t in targets:
-            for s in stops:
-                r, _, _ = _folds_of(feat, h, [top_n], net=t, stop=s)
+        for t, s, mode, tr in combos:
+            if True:
+                r, _, _ = _folds_of(feat, h, [top_n], net=t if mode == "barrier" else None,
+                                    stop=s, exit=mode, trail=tr)
                 if r.empty:
                     continue
                 mine = r[r.engine == "ml_neut"]
@@ -365,14 +374,16 @@ def grid(feat, horizons, targets, stops, top_n=None):
                 fa = sorted(mine.fold.unique())
                 half = len(fa) // 2
                 a = _agg(mine)
-                cells.append({"h": h, "t": t, "s": s, "folds": len(fa),
+                cells.append({"h": h, "t": t, "s": s, "mode": mode, "folds": len(fa),
                               "vlift": a["vlift"], "vlift_sd": a["vlift_sd"],
                               "prec": a["prec"], "ret": a["ret"], "cagr": a["cagr"],
                               "rnd_cagr": _agg(rnd)["cagr"],
                               "h1": _half(mine, fa, 0, half),
                               "h2": _half(mine, fa, half, len(fa))})
                 c = cells[-1]
-                print(f"  H={h:<3} 停利{t*100:>3.0f}% 停損{s*100:>3.0f}%  "
+                tag = (f"回檔{tr*100:>3.0f}%      " if mode == "trail"
+                       else f"停利{t*100:>3.0f}% 停損{s*100:>3.0f}%")
+                print(f"  H={h:<3} {tag}  "
                       f"lift {c['vlift']:.2f}  年化 {c['cagr']*100:+7.1f}%  "
                       f"(前半 {c['h1']*100:+6.1f}% 後半 {c['h2']*100:+6.1f}%)  "
                       f"隨機 {c['rnd_cagr']*100:+6.1f}%", flush=True)
@@ -393,11 +404,12 @@ def select(df, target=None):
 
 def grid_report(df):
     out = [f"\n{'=' * 96}", "格點搜尋結果（TOP_N 固定，錄取條件事前講定）", "=" * 96,
-           f"{'H':>3}{'停利':>7}{'停損':>7}{'折':>4}{'lift':>7}{'std':>7}"
+           f"{'H':>3}{'停利/回檔':>9}{'停損':>7}{'折':>4}{'lift':>7}{'std':>7}"
            f"{'命中':>7}{'年化':>9}{'前半':>9}{'後半':>9}{'隨機':>9}  判定"]
     for _, c in df.sort_values("cagr", ascending=False).iterrows():
         bad = _judge(c)
-        out.append(f"{c.h:>3}{c.t*100:>6.0f}%{c.s*100:>6.0f}%{c.folds:>4}"
+        s_txt = "  移動" if c.get("mode") == "trail" else f"{c.s*100:>6.0f}%"
+        out.append(f"{c.h:>3}{c.t*100:>8.0f}%{s_txt:>7}{c.folds:>4}"
                    f"{c.vlift:>7.2f}{c.vlift_sd:>7.2f}{c.prec*100:>6.1f}%"
                    f"{c.cagr*100:>+8.1f}%{c.h1*100:>+8.1f}%{c.h2*100:>+8.1f}%"
                    f"{c.rnd_cagr*100:>+8.1f}%  "

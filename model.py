@@ -124,11 +124,34 @@ def entry_price(nxt_open, nxt_low, prev_close, mode="open", cap=None):
     raise ValueError(f"未知的進場模式 {mode!r}")
 
 
-def label(df, horizon, net=None, entry="open", cap=None, stop=None):
+def trail_exit(px, high, low, close, trail):
+    """移動停損：記錄進場後的最高價，回檔 trail 就出場。
+
+    起點的峰值設為進場價，所以進場當下的停損線就是 entry x (1-trail) ——
+    一個參數同時取代固定停利與固定停損，沒有上檔天花板。
+
+    回傳 (raw報酬, 持有天數, 是否被掃出場)。未觸發則抱到期以收盤平倉。
+    """
+    # 停損線用「前一根為止」的峰值。若拿同一根的最高價設線再檢查同一根的最低價，
+    # 等於假設「先漲到頂才跌下來」，那是偏樂觀的 —— 跟本檔其他地方的保守慣例不一致。
+    run_max = np.maximum.accumulate(np.maximum(high, px))
+    lvl = np.concatenate([[px], run_max[:-1]]) * (1 - trail)
+    hit = low <= lvl
+    if hit.any():
+        t = int(np.argmax(hit))
+        return lvl[t] / px - 1, t + 1, 1
+    return close[-1] / px - 1, len(close), 0
+
+
+def label(df, horizon, net=None, entry="open", cap=None, stop=None,
+          exit="barrier", trail=None):
     """Triple barrier。訊號在 t 日收盤產生，隔日進場（無前視偏誤）。
 
-    y=1 先觸停利、y=0 先觸停損或到期平倉。同根 K 同時觸及 -> 判停損（保守）。
-    未成交的訊號 y=NaN，會被下游的 dropna 自然排除。
+    exit="barrier"：固定停利/停損，y=1 先觸停利、y=0 先觸停損或到期平倉。
+    exit="trail"  ：移動停損，沒有停利天花板，y=1 代表這筆淨報酬為正。
+                    兩種模式的 y 定義不同，precision 不可互相比較；
+                    可比的是年化與「贏隨機多少」。
+    同根 K 同時觸及 -> 判停損（保守）。未成交的訊號 y=NaN。
     net 可覆寫停利目標，讓單一 process 內能掃不同目標。
     回傳增加 y / net_ret / hold_days / stopped 四欄。
     """
@@ -151,8 +174,14 @@ def label(df, horizon, net=None, entry="open", cap=None, stop=None):
             px = entry_price(o[i + 1], lo[i + 1], cl[i], entry, cap)
             if px is None or not px > 0:
                 continue
-            up, dn = px * (1 + up_r), px * (1 - dn_r)
             w_hi, w_lo = hi[i + 1:i + 1 + horizon], lo[i + 1:i + 1 + horizon]
+            if exit == "trail":
+                raw, days[i], stopped[i] = trail_exit(
+                    px, w_hi, w_lo, cl[i + 1:i + 1 + horizon], trail)
+                ret[i] = C.net_return(raw, etf=etf)
+                y[i] = float(ret[i] > 0)
+                continue
+            up, dn = px * (1 + up_r), px * (1 - dn_r)
             t_up = np.argmax(w_hi >= up) if (w_hi >= up).any() else n
             t_dn = np.argmax(w_lo <= dn) if (w_lo <= dn).any() else n
             if t_dn <= t_up and t_dn < n:          # 停損先到（或同日，保守）

@@ -241,6 +241,11 @@ def cmd_grid(args):
     hs = args.horizons or [7, 30]
     ts = args.targets or [0.05, 0.12, 0.20]
     ss = args.stops or [0.05, 0.12, 0.20]
+    if args.trails:
+        print(f"格點 {len(hs) * len(args.trails)} 格"
+              f"（移動停損：持有期 {hs} x 回檔 {args.trails}）")
+        print(B.grid_report(B.grid(feat, hs, ts, ss, trails=args.trails)))
+        return
     print(f"格點 {len(hs) * len(ts) * len(ss)} 格（持有期 {hs} x 停利 {ts} x 停損 {ss}）")
     print(B.grid_report(B.grid(feat, hs, ts, ss)))
 
@@ -266,6 +271,7 @@ def main():
     sg.add_argument("--horizons", type=int, nargs="*")
     sg.add_argument("--targets", type=float, nargs="*")
     sg.add_argument("--stops", type=float, nargs="*")
+    sg.add_argument("--trails", type=float, nargs="*", help="移動停損的回檔幅度")
     sg.set_defaults(fn=cmd_grid)
     sa = sub.add_parser("audit", help="穩定性審核（八項查驗）")
     sa.add_argument("--horizon", type=int)

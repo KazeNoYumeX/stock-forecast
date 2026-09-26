@@ -185,6 +185,35 @@ def test_label_stop_param_multi_symbol():
     assert tight.stopped.mean() > 0.9, tight.stopped.mean()
 
 
+def test_trail_exit():
+    """移動停損取代固定停利停損，邏輯錯了整個實驗就白做。"""
+    a = np.array
+
+    # 立刻下跌：峰值＝進場價，跌破 entry x (1-trail) 出場
+    raw, days, st = M.trail_exit(100.0, a([100.0, 100]), a([85.0, 80]), a([88.0, 82]), 0.10)
+    assert (round(raw, 10), days, st) == (-0.10, 1, 1), (raw, days, st)
+
+    # 先漲後回檔：停損線隨峰值往上鎖，出場價是 peak x (1-trail) 而非進場價
+    raw, days, st = M.trail_exit(100.0, a([110.0, 150, 140]), a([100.0, 130, 130]),
+                                 a([108.0, 145, 132]), 0.10)
+    assert (round(raw, 10), days, st) == (0.35, 3, 1), (raw, days, st)
+
+    # 一路上漲沒回檔：抱到期，以最後收盤平倉，不算被掃出場
+    raw, days, st = M.trail_exit(100.0, a([110.0, 120, 130]), a([105.0, 115, 125]),
+                                 a([108.0, 118, 128]), 0.10)
+    assert (round(raw, 10), days, st) == (0.28, 3, 0), (raw, days, st)
+
+    # 停損線只能往上鎖，不能跟著回檔往下 —— 跌完又反彈不該重設起算點
+    raw, _, _ = M.trail_exit(100.0, a([200.0, 120, 120]), a([190.0, 115, 115]),
+                             a([195.0, 118, 118]), 0.10)
+    assert round(raw, 10) == 0.80, raw          # 峰值鎖在 200 -> 出場 180
+
+    # 同一根的最高價不得用來設自己的停損線（偏樂觀）
+    raw, days, _ = M.trail_exit(100.0, a([150.0, 100]), a([130.0, 100]),
+                                a([135.0, 100]), 0.10)
+    assert days == 2 and round(raw, 10) == 0.35, (raw, days)
+
+
 def test_random_has_no_lift():
     """虛無假設：隨機選股的同波動 lift 必須是 1.0。不是的話量尺本身有偏誤。"""
     rng = np.random.default_rng(3)
