@@ -244,11 +244,22 @@ JOBS = [("TWSE", ".TW", "%.TW", twse_inst, twse_margin),
         ("TPEX", ".TWO", "%.TWO", tpex_inst, tpex_margin)]
 
 
+def done_dates(con, pat):
+    """股票池八成以上有融資餘額的日子，才算補完（理由見 backfill）。"""
+    return {r[0] for r in con.execute(
+        "SELECT p.date FROM prices p LEFT JOIN chips c ON c.symbol = p.symbol "
+        "AND c.date = p.date AND c.margin_bal IS NOT NULL WHERE p.symbol LIKE ? "
+        "GROUP BY p.date HAVING COUNT(c.symbol) >= 0.8 * COUNT(*)", (pat,))}
+
+
 def backfill(con, dates, markets=None):
     """每個交易所 x WORKERS 條執行緒，日期用 stride 切開，各自寫入並分段 commit。
 
     續傳按「市場」分別判斷：只看 chips 表有沒有那天，會把一邊補完的日子
-    誤當成另一邊也補完了。
+    誤當成另一邊也補完了。「補完」＝股票池八成以上有融資餘額：
+    - 融資券比法人晚公布（約 21:00），傍晚跑只拿到法人，不能算補完，否則永遠是空的
+    - FinMind 回補只寫部分股票，有幾筆不代表那天全市場都有了
+    門檻用股票池而非全市場，因為 TWSE 的歷史本來就只有 FinMind 補的股票池。
     """
     con.executescript(SCHEMA)
     con.execute("PRAGMA journal_mode=WAL")
@@ -258,8 +269,7 @@ def backfill(con, dates, markets=None):
     for market, suffix, pat, inst_fn, margin_fn in JOBS:
         if markets and market not in markets:
             continue
-        have = {r[0] for r in con.execute(
-            "SELECT DISTINCT date FROM chips WHERE symbol LIKE ?", (pat,))}
+        have = done_dates(con, pat)
         todo = [d for d in dates if d.strftime("%Y-%m-%d") not in have]
         print(f"  {market}: 待補 {len(todo)}/{len(dates)} 天", flush=True)
         for i in range(WORKERS):

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 import backtest as B
+import chips as CH
 import config as C
 import model as M
 
@@ -310,6 +311,22 @@ def test_embargo():
             assert gap > h, f"embargo 不足：訓練尾端到測試起點只有 {gap} 天，需 > {h}"
         starts = [te[0] for _, te in got]
         assert len(set(starts)) == len(starts), "測試期重疊"
+
+
+def test_chips_resume():
+    """只有法人沒融資（傍晚跑）、或只有少數股票（FinMind 回補）的日子都要重抓。"""
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.executescript("CREATE TABLE prices(symbol, date);" + CH.SCHEMA)
+    syms = [f"{i:04d}.TW" for i in range(10)]
+    con.executemany("INSERT INTO prices VALUES (?,?)",
+                    [(s, d) for s in syms for d in ("D1", "D2", "D3")])
+    rows = [(s, "D1", 1, 1, 1, 100, 10) for s in syms[:9]]     # 九成有融資 -> 補完
+    rows += [(s, "D2", 1, 1, 1, None, None) for s in syms]     # 只有法人 -> 未完
+    rows += [(s, "D3", 1, 1, 1, 100, 10) for s in syms[:2]]    # 只有兩檔 -> 未完
+    rows += [("9999.TWO", "D1", 1, 1, 1, None, None)]          # 別的市場不影響
+    con.executemany("INSERT INTO chips VALUES (?,?,?,?,?,?,?)", rows)
+    assert CH.done_dates(con, "%.TW") == {"D1"}
 
 
 if __name__ == "__main__":
