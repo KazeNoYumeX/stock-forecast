@@ -194,7 +194,6 @@ def cmd_verify(args):
             print(f"  已結算 {len(done)} 檔：命中率 {(done.res=='win').mean()*100:.1f}%  "
                   f"平均淨報酬 {done.net.mean()*100:+.2f}%")
 
-    live = {p[0] for p in C.PROFILES}
     for mdl, g in v[v.model.isin(live)].groupby("model"):
         t = g.sort_values(["date", "rank"]).assign(
             名稱=g.symbol.map(names).fillna(""), 代號=g.symbol.str.split(".").str[0])
@@ -204,10 +203,10 @@ def cmd_verify(args):
                                "net": "淨報酬", "days": "已過交易日"})
               .round(4).to_string(index=False))
 
-    n_live = int(v.model.isin(live).sum())
-    n_open = int((v.res == "open").sum())
-    print(f"\n現行版本已結算 {n_live} 筆（另有 {len(v) - n_live} 筆舊實驗）、"
-          f"{n_open} 筆尚未到期。")
+    lv = v[v.model.isin(live)]
+    n_open = int((lv.res == "open").sum())
+    print(f"\n現行版本共 {len(lv)} 筆：已結算 {len(lv) - n_open}、持有中 {n_open}"
+          f"（另有 {len(v) - len(lv)} 筆舊實驗不計）。")
     print("回測需要約 16,000 筆選股才得出可信的 lift，單日數十檔在統計上等於零資訊。")
     print("這是在驗證結算流程，不是在驗證策略 —— 累積約 1,200 筆前不要據此調參數。")
 
