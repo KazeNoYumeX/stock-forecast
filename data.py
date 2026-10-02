@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -96,8 +97,12 @@ def fetch_prices(con, symbols):
     start = (pd.Timestamp(last) - pd.Timedelta(days=7)).date() if last else \
         dt.date.today() - dt.timedelta(days=365 * C.HISTORY_YEARS)
 
+    # 盤中跑的話今天的 K 棒還沒收完，寫進去 daily 會拿半根 K 棒發訊號（end 不含當天）
+    now = dt.datetime.now(ZoneInfo("Asia/Taipei"))
+    end = now.date() if now.time() < dt.time(14, 30) else None
+
     syms = list(dict.fromkeys(list(symbols) + [C.BENCHMARK]))
-    raw = yf.download(syms, start=start, group_by="ticker", threads=True,
+    raw = yf.download(syms, start=start, end=end, group_by="ticker", threads=True,
                       auto_adjust=False, progress=False)
     if raw.empty:
         raise SystemExit("yfinance 沒回任何資料，檢查網路或代號")
