@@ -16,15 +16,19 @@ import model as M
 pd.set_option("display.width", 200, "display.unicode.east_asian_width", True)
 
 
-def _features(con):
-    """讀 DB -> 特徵（未標籤）。回傳 (特徵表, 大盤 close)。"""
+def _features(con, asof=None):
+    """讀 DB -> 特徵（未標籤）。回傳 (特徵表, 大盤 close)。asof：只用到該日為止的資料（補跑漏掉的日子）。"""
     df = D.load_prices(con)
+    if asof:
+        df = df[df.date <= asof]
     bench = df[df.symbol == C.BENCHMARK].set_index("date").close
     if bench.empty:
         sys.exit("缺少大盤資料，先跑 `run.py fetch`")
     con.executescript(CH.SCHEMA)
-    return M.add_chips(M.build_features(df[df.symbol != C.BENCHMARK], bench),
-                       CH.load(con)), bench
+    ch = CH.load(con)
+    if asof:
+        ch = ch[ch.date <= asof]
+    return M.add_chips(M.build_features(df[df.symbol != C.BENCHMARK], bench), ch), bench
 
 
 def cmd_fetch(args):
@@ -118,7 +122,7 @@ def _one_profile(con, feat, h, name, net, stop, top_n, nm):
 
 def cmd_daily(args):
     con = D.db()
-    feat, _ = _features(con)
+    feat, _ = _features(con, args.asof)
     nm = D.names(con)
     profiles = [p for p in C.PROFILES if not args.profile or p[0] in args.profile]
     if not profiles:
@@ -288,6 +292,7 @@ def main():
         s.add_argument("--horizon", type=int, help=f"交易日，預設 {C.HORIZONS}")
         if name == "daily":
             s.add_argument("--profile", nargs="*", help="只產指定版本")
+            s.add_argument("--asof", help="補跑某個漏掉的交易日（YYYY-MM-DD），只用到該日為止的資料")
         s.set_defaults(fn=fn)
     args = p.parse_args()
     args.fn(args)

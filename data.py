@@ -1,6 +1,7 @@
 """資料層：universe 選取、歷史價抓取、SQLite 存取。"""
 import os
 import sqlite3
+import time
 import datetime as dt
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,17 @@ def _tradable(code):
     return (len(code) == 4 and code.isdigit()) or (code.startswith("00") and code[2:].isdigit())
 
 
+def _get_json(url, tries=3):
+    """官方 OpenAPI 偶爾傳到一半斷線（IncompleteRead），10/5、10/7 的 cron 都因此整條中斷。"""
+    for i in range(tries):
+        try:
+            return requests.get(url, timeout=30).json()
+        except requests.RequestException:
+            if i == tries - 1:
+                raise
+            time.sleep(10)
+
+
 def fetch_universe():
     """打官方 OpenAPI 取當日全市場成交金額，回傳 DataFrame[symbol, code, name, market, turnover]."""
     rows = []
@@ -44,7 +56,7 @@ def fetch_universe():
         (TWSE_URL, "TWSE", ".TW", "Code", "Name", "TradeValue"),
         (TPEX_URL, "TPEX", ".TWO", "SecuritiesCompanyCode", "CompanyName", "TransactionAmount"),
     ]:
-        for r in requests.get(url, timeout=30).json():
+        for r in _get_json(url):
             code = r[cc].strip()
             if not _tradable(code):
                 continue
